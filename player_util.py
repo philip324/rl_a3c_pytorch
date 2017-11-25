@@ -2,6 +2,7 @@ from __future__ import division
 import torch
 import torch.nn.functional as F
 from torch.autograd import Variable
+from dqn_utils import *
 
 
 class Agent(object):
@@ -22,7 +23,15 @@ class Agent(object):
         self.info = None
         self.reward = 0
 
-    def action_train(self):
+        self.reward_food = 0
+        self.reward_fruit = 0
+        self.reward_avoid = 0
+        self.reward_eat = 0
+
+        self.replay_buffer = ReplayBuffer(1000000, 4)
+
+
+    def action_train(self, t):
         if self.done:
             self.cx = Variable(torch.zeros(1, 512))
             self.hx = Variable(torch.zeros(1, 512))
@@ -37,16 +46,25 @@ class Agent(object):
         action = prob.multinomial().data
         log_prob = log_prob.gather(1, Variable(action))
         state, self.reward, self.done, self.info = self.env.step(action.numpy())
-        self.state = torch.from_numpy(state).float()
+
+        # self.state = torch.from_numpy(state).float()
         self.eps_len += 1
         self.done = self.done or self.eps_len >= self.args.max_episode_length
         self.reward = max(min(self.reward, 1), -1)
         self.values.append(value)
         self.log_probs.append(log_prob)
+
+        idx = self.replay_buffer.store_frame(self.state, rha_shape=4)
+        self.replay_buffer.store_effect(idx, action, self.reward, self.done)
+        if self.done:
+            state = self.env.reset()
+            state = torch.from_numpy(state).float()
+        self.state = state
+
         self.rewards.append(self.reward)
         return self
 
-    def action_test(self):
+    def action_test(self, t):
         if self.done:
             self.cx = Variable(torch.zeros(1, 512), volatile=True)
             self.hx = Variable(torch.zeros(1, 512), volatile=True)

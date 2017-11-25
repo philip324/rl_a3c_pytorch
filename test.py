@@ -7,6 +7,7 @@ from player_util import Agent
 from torch.autograd import Variable
 import time
 import logging
+import itertools
 
 
 def test(args, shared_model, env_conf):
@@ -32,11 +33,11 @@ def test(args, shared_model, env_conf):
     player.state = torch.from_numpy(player.state).float()
     player.model.eval()
 
-    while True:
+    for t in itertools.count():
         if player.done:
             player.model.load_state_dict(shared_model.state_dict())
 
-        player.action_test()
+        player.action_test(t)
         reward_sum += player.reward
 
         if player.done:

@@ -158,6 +158,8 @@ if __name__ == '__main__':
         p.start()
         processes.append(p)
         time.sleep(0.1)
-    for p in processes:
+    for i, p in enumerate(processes):
         time.sleep(0.1)
+        print("\nbefore join()")
         p.join()
+        print("Done with {}".format(i))

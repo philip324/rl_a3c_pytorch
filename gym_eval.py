@@ -11,6 +11,8 @@ from torch.autograd import Variable
 import gym
 import logging
 from gym.configuration import undo_logger_setup
+import itertools
+
 
 undo_logger_setup()
 
@@ -93,7 +95,7 @@ for i_episode in range(args.num_episodes):
     player.state = torch.from_numpy(player.state).float()
     player.eps_len = 0
     reward_sum = 0
-    while True:
+    for t in itertools.count():
         if args.render:
             if i_episode % args.render_freq == 0:
                 player.env.render()
@@ -101,7 +103,7 @@ for i_episode in range(args.num_episodes):
         if player.done:
             player.model.load_state_dict(saved_state)
 
-        player.action_test()
+        player.action_test(t)
         reward_sum += player.reward
 
         if player.done:
