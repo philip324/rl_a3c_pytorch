@@ -11,7 +11,6 @@ import itertools, copy
 batch_size = 64
 
 def train(rank, args, shared_model, optimizer, env_conf):
-
     torch.manual_seed(args.seed + rank)
     env = atari_env(args.env, env_conf)
     if optimizer is None:
@@ -26,6 +25,65 @@ def train(rank, args, shared_model, optimizer, env_conf):
     player.state = player.env.reset()
     player.state = torch.from_numpy(player.state).float()
     player.model.train()
+
+
+    img_h, img_w, img_c = player.env.observation_space.shape
+    input_shape = (img_h, img_w, 4*img_c)
+    num_actions = player.env.action_space.n
+
+    obs_t_ph              = tf.placeholder(tf.uint8, [None] + list(input_shape))
+    act_t_ph              = tf.placeholder(tf.int32,   [None])
+    rew_food_t_ph         = tf.placeholder(tf.float32, [None])
+    rew_fruit_t_ph        = tf.placeholder(tf.float32, [None])
+    rew_avoid_t_ph        = tf.placeholder(tf.float32, [None])
+    rew_eat_t_ph          = tf.placeholder(tf.float32, [None])
+    obs_tp1_ph            = tf.placeholder(tf.uint8, [None] + list(input_shape))
+    done_mask_ph          = tf.placeholder(tf.float32, [None])
+    obs_t_float   = tf.cast(obs_t_ph,   tf.float32) / 255.0
+    obs_tp1_float = tf.cast(obs_tp1_ph, tf.float32) / 255.0
+
+    q_val = player.model.atari_model(obs_t_float, num_actions, scope="q_func", reuse=False)
+    q_food, q_avoid, q_fruit, q_eat = q_val
+    target_val = player.model.atari_model(obs_tp1_float, num_actions, scope="target_q_func", reuse=False)
+    target_food, target_avoid, target_fruit, target_eat = target_val
+
+    q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='q_func')
+    target_q_func_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope='target_q_func')
+
+    q_act_food_t_val = tf.reduce_sum(q_food * tf.one_hot(act_t_ph, num_actions), axis=1)
+    q_act_avoid_t_val = tf.reduce_sum(q_avoid * tf.one_hot(act_t_ph, num_actions), axis=1)
+    q_act_fruit_t_val = tf.reduce_sum(q_fruit * tf.one_hot(act_t_ph, num_actions), axis=1)
+    q_act_eat_t_val = tf.reduce_sum(q_eat * tf.one_hot(act_t_ph, num_actions), axis=1)
+
+    y_food_t_val = rew_food_t_ph + (1 - done_mask_ph) * args.gamma * tf.reduce_max(target_food, axis=1)
+    y_avoid_t_val = rew_avoid_t_ph + (1 - done_mask_ph) * args.gamma * tf.reduce_max(target_avoid, axis=1)
+    y_fruit_t_val = rew_fruit_t_ph + (1 - done_mask_ph) * args.gamma * tf.reduce_max(target_fruit, axis=1)
+    y_eat_t_val = rew_eat_t_ph + (1 - done_mask_ph) * args.gamma * tf.reduce_max(target_eat, axis=1)
+
+    food_error = tf.reduce_mean(tf.losses.huber_loss(y_food_t_val, q_act_food_t_val))
+    avoid_error = tf.reduce_mean(tf.losses.huber_loss(y_avoid_t_val, q_act_avoid_t_val))
+    fruit_error = tf.reduce_mean(tf.losses.huber_loss(y_fruit_t_val, q_act_fruit_t_val))
+    eat_error = tf.reduce_mean(tf.losses.huber_loss(y_eat_t_val, q_act_eat_t_val))
+
+    # construct optimization op (with gradient clipping)
+    learning_rate = args.lr
+    # learning_rate = tf.placeholder(tf.float32, (), name="learning_rate")
+    train_food_fn = minimize_and_clip(optimizer, food_error,
+                 var_list=q_func_vars, clip_val=grad_norm_clipping)
+    train_avoid_fn = minimize_and_clip(optimizer, avoid_error,
+                 var_list=q_func_vars, clip_val=grad_norm_clipping)
+    train_fruit_fn = minimize_and_clip(optimizer, fruit_error,
+                 var_list=q_func_vars, clip_val=grad_norm_clipping)
+    train_eat_fn = minimize_and_clip(optimizer, eat_error,
+                 var_list=q_func_vars, clip_val=grad_norm_clipping)
+
+    # update_target_fn will be called periodically to copy Q network to target Q network
+    update_target_fn = []
+    for var, var_target in zip(sorted(q_func_vars,        key=lambda v: v.name),
+                               sorted(target_q_func_vars, key=lambda v: v.name)):
+        update_target_fn.append(var_target.assign(var))
+    update_target_fn = tf.group(*update_target_fn)
+
 
     model_initialized = False
     num_param_updates = 0
@@ -61,29 +119,29 @@ def train(rank, args, shared_model, optimizer, env_conf):
                                 act_t_ph:act_t_batch,
                                 rew_food_t_ph:rew_food_t_batch,
                                 obs_tp1_ph:obs_tp1_batch,
-                                done_mask_ph:done_mask_batch,
-                                learning_rate:optimizer_spec.lr_schedule.value(t)})
+                                done_mask_ph:done_mask_batch})
+                                # learning_rate:optimizer_spec.lr_schedule.value(t)})
                 session.run(train_avoid_fn, feed_dict={
                                 obs_t_ph:obs_t_batch,
                                 act_t_ph:act_t_batch,
                                 rew_avoid_t_ph:rew_avoid_t_batch,
                                 obs_tp1_ph:obs_tp1_batch,
-                                done_mask_ph:done_mask_batch,
-                                learning_rate:optimizer_spec.lr_schedule.value(t)})
+                                done_mask_ph:done_mask_batch})
+                                # learning_rate:optimizer_spec.lr_schedule.value(t)})
                 session.run(train_fruit_fn, feed_dict={
                                 obs_t_ph:obs_t_batch,
                                 act_t_ph:act_t_batch,
                                 rew_fruit_t_ph:rew_fruit_t_batch,
                                 obs_tp1_ph:obs_tp1_batch,
-                                done_mask_ph:done_mask_batch,
-                                learning_rate:optimizer_spec.lr_schedule.value(t)})
+                                done_mask_ph:done_mask_batch})
+                                # learning_rate:optimizer_spec.lr_schedule.value(t)})
                 session.run(train_eat_fn, feed_dict={
                                 obs_t_ph:obs_t_batch,
                                 act_t_ph:act_t_batch,
                                 rew_eat_t_ph:rew_eat_t_batch,
                                 obs_tp1_ph:obs_tp1_batch,
-                                done_mask_ph:done_mask_batch,
-                                learning_rate:optimizer_spec.lr_schedule.value(t)})
+                                done_mask_ph:done_mask_batch})
+                                # learning_rate:optimizer_spec.lr_schedule.value(t)})
 
 
                 if num_param_updates % target_update_freq == 0:
